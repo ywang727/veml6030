@@ -1,0 +1,16 @@
+[package]
+name = "veml6030"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror-no-std = { version = "2.0" }
+embedded-hal = "0.2.7"
+bitfield = "0.13.0"
+log = "0.4"
+env_logger = { version = "0.7", optional = true }
+
+
+[features]
+dump = []
+default = ["dump"]
