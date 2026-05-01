@@ -3,14 +3,55 @@ name = "veml6030"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["async", "defmt"]
+async = ["dep:embedded-hal-async"]
+defmt = ["dep:defmt"]
+
 [dependencies]
-thiserror-no-std = { version = "2.0" }
-embedded-hal = "0.2.7"
+thiserror = { version = "2.0", default-features = false }
+embedded-hal = "1.0"
+embedded-hal-async = { version = "1.0", optional = true }
+embedded-hal-02 = { package = "embedded-hal", version = "0.2.7" }
 bitfield = "0.13.0"
 log = "0.4"
-env_logger = { version = "0.7", optional = true }
+defmt = { version = "1.0.1", optional = true }
+embassy-futures = "0.1.2"
 
 
-[features]
-dump = []
-default = ["dump"]
+[dev-dependencies]
+# 提示：运行宿主机单元测试请执行：
+# cargo test --lib --no-default-features --target x86_64-pc-windows-msvc
+embedded-hal-mock = { version = "0.11", features = ["eh1"] }
+static_cell = { version = "2" }
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dev-dependencies]
+embassy-nrf = { version = "0.10.0", features = [
+    "defmt",
+    "nrf52840",
+    "time-driver-rtc1",
+    "gpiote",
+    "unstable-pac",
+    "time",
+    "net-driver",
+] }
+embassy-executor = { version = "0.10.0", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "executor-interrupt",
+    "defmt",
+] }
+embassy-time = { version = "0.5.1", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "generic-queue-8",
+] }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+cortex-m = { version = "0.7.7", features = [
+    "inline-asm",
+    "critical-section-single-core",
+] }
+cortex-m-rt = "0.7"

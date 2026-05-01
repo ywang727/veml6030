@@ -1,99 +1,183 @@
 use crate::error::{Error, Result};
+use crate::fmt::*;
 use crate::regs::*;
-use embedded_hal::blocking::i2c::{Write, WriteRead};
 
-const REG_ALS_CONFIG: u8 = 0x00;
-const REG_ALS_WINDOW_HIGHT: u8 = 0x01;
-const REG_ALS_WINDOWS_LOW: u8 = 0x02;
-const REG_POWER_SAVING: u8 = 0x03;
-const REG_ALS: u8 = 0x04;
-const REG_WHITE: u8 = 0x05;
-const REG_ALS_INT: u8 = 0x06;
-const REG_DEVICE_ID: u8 = 0x07;
+#[cfg(not(feature = "async"))]
+use embedded_hal::i2c::I2c as I2cTrait;
+#[cfg(feature = "async")]
+use embedded_hal_async::i2c::I2c as I2cTrait;
 
 #[derive(Debug)]
-pub struct DeviceID {
-    pub option_code: u8,
-    pub device_id: u8,
-}
-
-#[derive(Debug)]
-pub struct IntStatus {
-    pub int_th_low: bool,
-    pub int_th_high: bool,
-}
-
-impl From<u16> for DeviceID {
-    fn from(value: u16) -> Self {
-        DeviceID {
-            option_code: (value >> 8) as u8,
-            device_id: (value & 0xff) as u8,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Veml6030<I2C>
-where
-    I2C: Write,
-{
+pub struct Veml6030<I2C> {
     i2c: I2C,
     addr: u8,
+    pub(crate) als_config: AlsConfig,
 }
 
 impl<I2C> Veml6030<I2C>
 where
-    I2C: Write + WriteRead,
+    I2C: I2cTrait,
 {
-    pub fn new(bus: I2C, addr: u8) -> Self {
-        Veml6030 {
-            i2c: bus,
-            addr: addr,
+    //by default, the sensor is in shutdown state
+    pub fn new(i2c: I2C, addr: u8) -> Self {
+        Self {
+            i2c,
+            addr,
+            als_config: AlsConfig::default(),
         }
     }
 
-    // read a byte from a register
-    fn read_reg(&mut self, reg: u8) -> Result<u16> {
-        let mut buf = [0u8; 2];
-        self.burst_read(reg, &mut buf)
-            .map_err(|_| Error::I2CReadError)?;
-        let res = ((buf[1] as u16) << 8) + buf[0] as u16;
-        Ok(res)
+    pub(crate) fn new_with_config(i2c: I2C, addr: u8, als_config: AlsConfig) -> Self {
+        Self {
+            i2c,
+            addr,
+            als_config,
+        }
     }
 
-    // write a byte into  a register
-    fn write_reg(&mut self, reg: u8, val: u16) -> Result<()> {
-        let buf = [reg, (val >> 8) as u8, (val & 0xff) as u8];
+    pub fn resolution(&self) -> f32 {
+        self.als_config.calculate_resolution()
+    }
+}
+
+#[cfg(feature = "async")]
+impl<I2C> Veml6030<I2C>
+where
+    I2C: I2cTrait,
+{
+    pub async fn read_reg(&mut self, reg: u8) -> Result<u16> {
+        let mut buf = [0u8; 2];
+        self.i2c
+            .write_read(self.addr, &[reg], &mut buf)
+            .await
+            .map_err(|_| Error::I2CReadError)?;
+        let val = ((buf[1] as u16) << 8) | buf[0] as u16;
+        trace!("VEML6030: read reg 0x{:02x} = 0x{:04x}", reg, val);
+        Ok(val)
+    }
+
+    pub async fn write_reg(&mut self, reg: u8, val: u16) -> Result<()> {
+        trace!("VEML6030: write reg 0x{:02x} = 0x{:04x}", reg, val);
+        let buf = [reg, (val & 0xff) as u8, (val >> 8) as u8];
+        self.i2c
+            .write(self.addr, &buf)
+            .await
+            .map_err(|_| Error::I2CWriteError)
+    }
+
+    pub async fn device_id(&mut self) -> Result<DeviceIDResult> {
+        let val = self.read_reg(REG_DEVICE_ID).await?;
+        Ok(val.into())
+    }
+
+    pub async fn read_als(&mut self) -> Result<u16> {
+        self.read_reg(REG_ALS).await
+    }
+
+    pub async fn read_lux(&mut self) -> Result<f32> {
+        let raw = self.read_als().await?;
+        Ok(raw as f32 * self.resolution())
+    }
+
+    pub async fn set_thresholds_lux(&mut self, low_lux: f32, high_lux: f32) -> Result<()> {
+        let res = self.resolution();
+        let low = (low_lux / res) as u16;
+        let high = (high_lux / res) as u16;
+        self.set_thresholds(low, high).await
+    }
+
+    pub async fn read_white(&mut self) -> Result<u16> {
+        self.read_reg(REG_WHITE).await
+    }
+
+    pub async fn read_int_status(&mut self) -> Result<IntStatus> {
+        let val = self.read_reg(REG_ALS_INT).await?;
+        let data = AlsIntStatus(val);
+        Ok(IntStatus {
+            int_th_low: data.int_th_low() > 0,
+            int_th_high: data.int_th_high() > 0,
+        })
+    }
+
+    pub async fn stop(&mut self) -> Result<()> {
+        self.als_config.set_als_sd(1);
+        self.write_reg(REG_ALS_CONFIG, self.als_config.0).await
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        self.als_config.set_als_sd(0);
+        self.write_reg(REG_ALS_CONFIG, self.als_config.0).await
+    }
+
+    pub async fn enable_interrupt(&mut self, enable: bool) -> Result<()> {
+        let val = self.read_reg(REG_ALS_CONFIG).await?;
+        let new_val = if enable { val | 0x0002 } else { val & 0xfffd };
+        self.write_reg(REG_ALS_CONFIG, new_val).await
+    }
+
+    pub async fn set_thresholds(&mut self, low: u16, high: u16) -> Result<()> {
+        self.write_reg(REG_ALS_WINDOWS_LOW, low).await?;
+        self.write_reg(REG_ALS_WINDOW_HIGHT, high).await
+    }
+
+    pub async fn wait_interrupt<P>(&mut self, pin: &mut P) -> Result<()>
+    where
+        P: embedded_hal_async::digital::Wait,
+    {
+        pin.wait_for_low().await.map_err(|_| Error::InterruptError)
+    }
+}
+
+#[cfg(not(feature = "async"))]
+impl<I2C> Veml6030<I2C>
+where
+    I2C: I2cTrait,
+{
+    pub fn read_lux(&mut self) -> Result<f32> {
+        let raw = self.read_als()?;
+        Ok(raw as f32 * self.resolution())
+    }
+
+    pub fn set_thresholds_lux(&mut self, low_lux: f32, high_lux: f32) -> Result<()> {
+        let res = self.resolution();
+        let low = (low_lux / res) as u16;
+        let high = (high_lux / res) as u16;
+        self.set_thresholds(low, high)
+    }
+
+    pub fn read_reg(&mut self, reg: u8) -> Result<u16> {
+        let mut buf = [0u8; 2];
+        self.i2c
+            .write_read(self.addr, &[reg], &mut buf)
+            .map_err(|_| Error::I2CReadError)?;
+        let val = ((buf[1] as u16) << 8) | buf[0] as u16;
+        trace!("VEML6030: read reg 0x{:02x} = 0x{:04x}", reg, val);
+        Ok(val)
+    }
+
+    pub fn write_reg(&mut self, reg: u8, val: u16) -> Result<()> {
+        trace!("VEML6030: write reg 0x{:02x} = 0x{:04x}", reg, val);
+        let buf = [reg, (val & 0xff) as u8, (val >> 8) as u8];
         self.i2c
             .write(self.addr, &buf)
             .map_err(|_| Error::I2CWriteError)
     }
-    // read a bunch of bytes from an address started at start_reg ,
-    // as for how many bytes being read, it's determined by the size of the buffer
-    fn burst_read<'b>(&mut self, start_reg: u8, buf: &'b mut [u8]) -> Result<&'b [u8]> {
-        self.i2c
-            .write_read(self.addr, &[start_reg], buf)
-            .map_err(|_| Error::I2CWriteError)?;
-        Ok(buf)
-    }
 
-    pub fn device_id(&mut self) -> Result<DeviceID> {
+    pub fn device_id(&mut self) -> Result<DeviceIDResult> {
         let val = self.read_reg(REG_DEVICE_ID)?;
         Ok(val.into())
     }
 
     pub fn read_als(&mut self) -> Result<u16> {
-        let val = self.read_reg(REG_ALS)?;
-        Ok(val)
+        self.read_reg(REG_ALS)
     }
+
     pub fn read_white(&mut self) -> Result<u16> {
-        let val = self.read_reg(REG_WHITE)?;
-        Ok(val)
+        self.read_reg(REG_WHITE)
     }
 
     pub fn read_int_status(&mut self) -> Result<IntStatus> {
         let val = self.read_reg(REG_ALS_INT)?;
-
         let data = AlsIntStatus(val);
         Ok(IntStatus {
             int_th_low: data.int_th_low() > 0,
@@ -102,12 +186,78 @@ where
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        let val = self.read_reg(REG_ALS_CONFIG)?;
-        self.write_reg(REG_ALS_CONFIG, val | 0x0001)
+        self.als_config.set_als_sd(1);
+        self.write_reg(REG_ALS_CONFIG, self.als_config.0)
     }
 
     pub fn start(&mut self) -> Result<()> {
+        self.als_config.set_als_sd(0);
+        self.write_reg(REG_ALS_CONFIG, self.als_config.0)
+    }
+
+    pub fn enable_interrupt(&mut self, enable: bool) -> Result<()> {
         let val = self.read_reg(REG_ALS_CONFIG)?;
-        self.write_reg(REG_ALS_CONFIG, val & 0xfffe)
+        let new_val = if enable { val | 0x0002 } else { val & 0xfffd };
+        self.write_reg(REG_ALS_CONFIG, new_val)
+    }
+
+    pub fn set_thresholds(&mut self, low: u16, high: u16) -> Result<()> {
+        self.write_reg(REG_ALS_WINDOWS_LOW, low)?;
+        self.write_reg(REG_ALS_WINDOW_HIGHT, high)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTrans};
+
+    const ADDR: u8 = 0x10;
+
+    #[test]
+    fn test_read_reg() {
+        // 预期行为：写入寄存器地址 0x04，然后读回 [0xAB, 0xCD] (对应 0xCDAB)
+        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![0xAB, 0xCD])];
+        let i2c = I2cMock::new(&expectations);
+        let mut sensor = Veml6030::new(i2c, ADDR);
+
+        let val = sensor.read_reg(0x04).unwrap();
+        assert_eq!(val, 0xCDAB);
+
+        let mut i2c = sensor.i2c;
+        i2c.done(); // 验证所有预期事务已完成
+    }
+
+    #[test]
+    fn test_write_reg() {
+        // 预期行为：向 0x00 写入 [0x01, 0x02] (对应 0x0201)
+        let expectations = [I2cTrans::write(ADDR, vec![0x00, 0x01, 0x02])];
+        let i2c = I2cMock::new(&expectations);
+        let mut sensor = Veml6030::new(i2c, ADDR);
+
+        sensor.write_reg(0x00, 0x0201).unwrap();
+
+        let mut i2c = sensor.i2c;
+        i2c.done();
+    }
+
+    #[test]
+    fn test_read_lux_calculation() {
+        // 验证分辨率计算和 Lux 转换
+        // 设定为 Gain x1, IT 100ms -> 基准分辨率应为 0.0672
+        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![100, 0])]; // 100 counts
+        let i2c = I2cMock::new(&expectations);
+        
+        let mut config = AlsConfig::default(); // 默认 IT 100ms, Gain X1 (根据 Default 实现)
+        config.set_als_sd(0); // 确保在运行态
+        
+        let mut sensor = Veml6030::new_with_config(i2c, ADDR, config);
+        
+        let lux = sensor.read_lux().unwrap();
+        // 100 * 0.0672 = 6.72
+        assert!((lux - 6.72).abs() < 0.0001);
+
+        let mut i2c = sensor.i2c;
+        i2c.done();
     }
 }

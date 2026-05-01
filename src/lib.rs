@@ -1,7 +1,8 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![recursion_limit = "256"]
 
 pub mod builder;
 pub mod error;
-mod regs;
+pub mod fmt;
+pub mod regs;
 pub mod sensor;

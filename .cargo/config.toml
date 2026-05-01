@@ -1,0 +1,12 @@
+[env]
+DEFMT_LOG = "trace"
+
+[alias]
+htest = "test --lib --no-default-features --target x86_64-pc-windows-msvc"
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip nRF52840_xxAA"
+rustflags = ["-C", "link-arg=-Tlink.x", "-C", "link-arg=-Tdefmt.x"]
+
+[build]
+target = "thumbv7em-none-eabihf"
