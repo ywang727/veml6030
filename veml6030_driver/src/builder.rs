@@ -138,7 +138,6 @@ where
     pub fn thresholds_in_lux(mut self, low_lux: f32, high_lux: f32) -> VemlBuilder<I2C, Ready> {
         let res = self.als_config.calculate_resolution();
 
-        // 将 Lux 转换为寄存器原始数值 (counts)
         self.th_low = (low_lux / res) as u16;
         self.th_high = (high_lux / res) as u16;
 

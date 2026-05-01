@@ -124,8 +124,8 @@ bitfield! {
     #[derive(Copy, Clone)]
     pub struct AlsIntStatus(u16);
     impl Debug;
-    pub int_th_low, _: 15, 15;
-    pub int_th_high, _: 14, 14;
+    pub bool, int_th_low, _: 15;
+    pub bool, int_th_high, _: 14;
     u16, reserved, _: 13, 0;
 }
 

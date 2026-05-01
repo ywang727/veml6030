@@ -9,9 +9,19 @@ use embedded_hal_async::i2c::I2c as I2cTrait;
 
 #[derive(Debug)]
 pub struct Veml6030<I2C> {
-    i2c: I2C,
+    pub(crate) i2c: I2C,
     addr: u8,
     pub(crate) als_config: AlsConfig,
+}
+
+impl From<u16> for IntStatus {
+    fn from(val: u16) -> Self {
+        let status = AlsIntStatus(val);
+        Self {
+            int_th_low: status.int_th_low(),
+            int_th_high: status.int_th_high(),
+        }
+    }
 }
 
 impl<I2C> Veml6030<I2C>
@@ -94,8 +104,8 @@ where
         let val = self.read_reg(REG_ALS_INT).await?;
         let data = AlsIntStatus(val);
         Ok(IntStatus {
-            int_th_low: data.int_th_low() > 0,
-            int_th_high: data.int_th_high() > 0,
+            int_th_low: data.int_th_low(),
+            int_th_high: data.int_th_high(),
         })
     }
 
@@ -180,8 +190,8 @@ where
         let val = self.read_reg(REG_ALS_INT)?;
         let data = AlsIntStatus(val);
         Ok(IntStatus {
-            int_th_low: data.int_th_low() > 0,
-            int_th_high: data.int_th_high() > 0,
+            int_th_low: data.int_th_low(),
+            int_th_high: data.int_th_high(),
         })
     }
 
@@ -208,6 +218,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "async"))]
 mod tests {
     use super::*;
     use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTrans};
@@ -216,7 +227,6 @@ mod tests {
 
     #[test]
     fn test_read_reg() {
-        // 预期行为：写入寄存器地址 0x04，然后读回 [0xAB, 0xCD] (对应 0xCDAB)
         let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![0xAB, 0xCD])];
         let i2c = I2cMock::new(&expectations);
         let mut sensor = Veml6030::new(i2c, ADDR);
@@ -225,12 +235,11 @@ mod tests {
         assert_eq!(val, 0xCDAB);
 
         let mut i2c = sensor.i2c;
-        i2c.done(); // 验证所有预期事务已完成
+        i2c.done();
     }
 
     #[test]
     fn test_write_reg() {
-        // 预期行为：向 0x00 写入 [0x01, 0x02] (对应 0x0201)
         let expectations = [I2cTrans::write(ADDR, vec![0x00, 0x01, 0x02])];
         let i2c = I2cMock::new(&expectations);
         let mut sensor = Veml6030::new(i2c, ADDR);
@@ -243,18 +252,53 @@ mod tests {
 
     #[test]
     fn test_read_lux_calculation() {
-        // 验证分辨率计算和 Lux 转换
-        // 设定为 Gain x1, IT 100ms -> 基准分辨率应为 0.0672
-        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![100, 0])]; // 100 counts
+        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![100, 0])];
         let i2c = I2cMock::new(&expectations);
-        
-        let mut config = AlsConfig::default(); // 默认 IT 100ms, Gain X1 (根据 Default 实现)
-        config.set_als_sd(0); // 确保在运行态
-        
+
+        let mut config = AlsConfig::default();
+        config.set_als_sd(0);
         let mut sensor = Veml6030::new_with_config(i2c, ADDR, config);
-        
+
         let lux = sensor.read_lux().unwrap();
         // 100 * 0.0672 = 6.72
+        assert!((lux - 6.72).abs() < 0.0001);
+
+        let mut i2c = sensor.i2c;
+        i2c.done();
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "async")]
+mod async_tests {
+    use super::*;
+    use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTrans};
+    use futures::executor::block_on;
+
+    const ADDR: u8 = 0x10;
+
+    #[test]
+    fn test_read_reg_async() {
+        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![0xAB, 0xCD])];
+        let i2c = I2cMock::new(&expectations);
+        let mut sensor = Veml6030::new(i2c, ADDR);
+
+        let val = block_on(sensor.read_reg(0x04)).unwrap();
+        assert_eq!(val, 0xCDAB);
+
+        let mut i2c = sensor.i2c;
+        i2c.done();
+    }
+
+    #[test]
+    fn test_read_lux_async() {
+        let expectations = [I2cTrans::write_read(ADDR, vec![0x04], vec![100, 0])];
+        let i2c = I2cMock::new(&expectations);
+        let mut config = AlsConfig::default();
+        config.set_als_sd(0);
+        let mut sensor = Veml6030::new_with_config(i2c, ADDR, config);
+
+        let lux = block_on(sensor.read_lux()).unwrap();
         assert!((lux - 6.72).abs() < 0.0001);
 
         let mut i2c = sensor.i2c;

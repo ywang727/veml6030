@@ -8,8 +8,8 @@ use embassy_nrf::twim::{self, Twim};
 use embassy_nrf::{bind_interrupts, peripherals};
 //use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
-use veml6030::builder::VemlBuilder;
-use veml6030::regs::{ALSGain, ALSIt};
+use veml6030_driver::builder::VemlBuilder;
+use veml6030_driver::regs::{ALSGain, ALSIt};
 use {defmt_rtt as _, embassy_nrf as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
