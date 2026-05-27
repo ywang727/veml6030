@@ -9,8 +9,6 @@ pub enum Error {
     I2CWriteError,
     #[error("Interrupt pin error")]
     InterruptError,
-    #[error("Timeout error")]
-    Timeout,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

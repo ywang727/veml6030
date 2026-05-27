@@ -117,12 +117,9 @@ where
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn build<D>(mut self, delay: D) -> Result<Veml6030<I2C, D>>
-    where
-        D: embedded_hal::delay::DelayNs,
-    {
+    pub fn build(mut self) -> Result<Veml6030<I2C>> {
         self.als_config.set_als_sd(1);
-        let mut sensor = Veml6030::new_with_config(self.i2c, self.addr, self.als_config, delay);
+        let mut sensor = Veml6030::new_with_config(self.i2c, self.addr, self.als_config);
 
         sensor.write_reg(REG_ALS_CONFIG, self.als_config.0)?;
         sensor.write_reg(REG_POWER_SAVING, self.power_saving.0)?;
